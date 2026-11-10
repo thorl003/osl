@@ -1,0 +1,653 @@
+LINUX LAB — EXPERIMENTS 1 TO 4
+COPY-PASTE COMMANDS FOR UBUNTU
+========================================
+
+Run experiments in order: 1 -> 2 -> 3 -> 4.
+Run the commands in order. Section titles and numbered instructions are not terminal commands.
+Project: ~/automation-lab
+Prerequisites: Ubuntu with systemd, Internet connection, and a GitHub account.
+GitHub authentication requires interaction with the browser or CLI prompts.
+
+
+========================================
+READ ONCE BEFORE STARTING — SAVE / EXIT / QUIT COMMANDS
+========================================
+Normal terminal commands: press ENTER to execute; there is nothing to save or quit.
+Save/quit keys apply only to editors (nano/vim) or pagers (less, Git log, etc.).
+
+NANO EDITOR (nano filename):
+  Save file                 Ctrl + O, then Enter
+  Exit editor               Ctrl + X
+  Save and exit             Ctrl + O, Enter, Ctrl + X
+  Exit without saving       Ctrl + X, then N (if prompted)
+
+VIM / VI EDITOR (vim filename / vi filename):
+  Start typing              press i
+  Stop typing / command     Esc
+  Save                     Esc, type :w, press Enter
+  Save and exit            Esc, type :wq, press Enter
+  Exit without saving      Esc, type :q!, press Enter
+  Quit unchanged file      Esc, type :q, press Enter
+
+CRONTAB EDITOR (crontab -e):
+  If nano opens:             Ctrl + O, Enter, Ctrl + X
+  If vim opens:              Esc, :wq, Enter
+  Check saved crontab:       crontab -l
+
+OUTPUT / TERMINAL:
+  less / man / git log pager: press q to quit (not :q)
+  git diff in pager:         press q to quit
+  systemctl status pager:   press q to quit; --no-pager disables pager
+  journalctl pager:         press q to quit; --no-pager disables pager
+  Stop a running command:   Ctrl + C
+  Exit shell:               type exit and press Enter (or Ctrl + D)
+  Command is waiting for >: Ctrl + C cancels unfinished command
+
+HEREDOC FILE CREATION (cat > filename <<'EOF'):
+  Paste from the cat line through the last standalone EOF line.
+  The final EOF followed by Enter SAVES the file automatically.
+  No Ctrl + O, Ctrl + X or :wq is necessary for these commands.
+  CAUTION: EOF must be on its own line, with no indentation.
+
+GITHUB CLI:
+  gh auth login: follow interactive menu, open browser when prompted.
+  gh repo view --web: browser tab; close tab normally when finished.
+
+========================================
+EXPERIMENT 1 — JOB SCHEDULING AND AUTOMATION IN LINUX
+========================================
+
+1. Install tools:
+
+sudo apt update
+sudo apt install -y cron git python3
+sudo systemctl enable --now cron
+
+2. Create folders:
+
+mkdir -p ~/automation-lab/scripts ~/automation-lab/logs
+cd ~/automation-lab
+
+3. Create system-report script (paste entire block):
+
+cat > scripts/sysreport.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOGDIR="$PROJECT_DIR/logs"
+mkdir -p "$LOGDIR"
+LOGFILE="$LOGDIR/sysreport_$(date +%F).log"
+{
+  echo "================================"
+  echo "SYSTEM REPORT"
+  echo "================================"
+  echo "Date: $(date)"
+  echo "User: $(whoami)"
+  echo "Hostname: $(hostname)"
+  echo "System: $(uname -a)"
+  echo "Disk Usage:"
+  df -h
+  echo "Memory Usage:"
+  free -h
+  echo "System Uptime:"
+  uptime
+  echo "Report completed successfully"
+  echo "================================"
+} >> "$LOGFILE"
+echo "Report saved: $LOGFILE"
+EOF
+
+
+4. Run script, inspect output:
+
+chmod +x scripts/sysreport.sh
+./scripts/sysreport.sh
+ls -l logs/
+cat "logs/sysreport_$(date +%F).log"
+
+5. Configure cron every 5 minutes:
+
+(crontab -l 2>/dev/null | grep -v '/automation-lab/scripts/sysreport.sh' || true; echo "*/5 * * * * $HOME/automation-lab/scripts/sysreport.sh >> $HOME/automation-lab/logs/cron.log 2>&1") | crontab -
+crontab -l
+sudo systemctl status cron --no-pager
+
+6. Create user-level systemd service and timer:
+
+mkdir -p ~/.config/systemd/user
+
+cat > ~/.config/systemd/user/sysreport.service <<'EOF'
+[Unit]
+Description=System Report Automation
+[Service]
+Type=oneshot
+ExecStart=%h/automation-lab/scripts/sysreport.sh
+WorkingDirectory=%h/automation-lab
+EOF
+
+
+cat > ~/.config/systemd/user/sysreport.timer <<'EOF'
+[Unit]
+Description=Run System Report Every Five Minutes
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=5min
+Unit=sysreport.service
+[Install]
+WantedBy=timers.target
+EOF
+
+
+systemctl --user daemon-reload
+systemctl --user enable --now sysreport.timer
+systemctl --user start sysreport.service
+
+7. Verify timer and troubleshoot:
+
+systemctl --user status sysreport.timer --no-pager
+systemctl --user list-timers --all
+systemctl --user status sysreport.service --no-pager
+journalctl --user -u sysreport.service -n 30 --no-pager
+bash -n scripts/sysreport.sh
+tail -n 20 "logs/sysreport_$(date +%F).log"
+
+8. Stop duplicate cron executions before Experiment 2 (timer remains enabled):
+
+(crontab -l 2>/dev/null | grep -v '/automation-lab/scripts/sysreport.sh' || true) | crontab -
+
+EXPECTED: Timestamped system reports in logs/; cron and systemd timer demonstrated.
+
+========================================
+EXPERIMENT 2 — GIT AND GITHUB INTEGRATION
+========================================
+
+1. Initialize Git, set identity:
+
+cd ~/automation-lab
+git init -b master
+git config --global user.name "sanjay"
+git config --global user.email "sanjay26120002@snuchennai.edu.in"
+git status
+
+2. Create report-and-commit script:
+
+cat > scripts/run_and_commit.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_DIR"
+echo "Generating system report..."
+bash scripts/sysreport.sh
+echo "Validating Bash scripts..."
+bash -n scripts/sysreport.sh
+bash -n scripts/run_and_commit.sh
+echo "Staging reports..."
+git add logs/sysreport_*.log
+if ! git diff --cached --quiet; then
+    git commit -m "automatic system report $(date '+%F %T')"
+else
+    echo "No report changes to commit"
+fi
+if git remote get-url origin >/dev/null 2>&1; then
+    git push origin "$(git branch --show-current)"
+fi
+echo "Automation completed"
+EOF
+
+chmod +x scripts/run_and_commit.sh
+
+3. Create pre-commit hook:
+
+cat > .git/hooks/pre-commit <<'EOF'
+#!/usr/bin/env bash
+set -e
+echo "Running pre-commit validation..."
+bash -n scripts/sysreport.sh
+bash -n scripts/run_and_commit.sh
+echo "Pre-commit checks passed"
+EOF
+
+chmod +x .git/hooks/pre-commit
+
+4. Create post-commit hook:
+
+cat > .git/hooks/post-commit <<'EOF'
+#!/usr/bin/env bash
+echo "Post-commit hook executed"
+git log -1 --oneline
+EOF
+
+chmod +x .git/hooks/post-commit
+
+5. Initial commit and automatic commit test:
+
+git add scripts/ logs/
+git commit -m "Initial Linux automation project"
+./scripts/run_and_commit.sh
+git status
+git log --oneline -5
+
+6. Branching and merging:
+
+git switch -c add-disk-report
+echo "# Disk report enhancement" >> README.md
+git add README.md
+git commit -m "Add disk report enhancement"
+git switch master
+git merge add-disk-report
+git log --oneline --graph --all
+
+7. Install and authenticate GitHub CLI:
+
+sudo apt install -y gh
+gh auth login
+LOGIN/EXIT: Follow terminal prompts and complete browser sign-in. Ctrl+C cancels login if needed.
+gh auth status
+
+8A. For a NEW repository, use:
+
+gh repo create automation-lab --private --source=. --remote=origin --push
+
+8B. ALTERNATIVE for an EXISTING repository (do not execute 8A and 8B together):
+
+# Replace YOUR_USERNAME and repository as appropriate.
+# git remote add origin https://github.com/YOUR_USERNAME/automation-lab.git
+# git push -u origin master
+
+9. Verify remote and repository:
+
+git remote -v
+git branch -a
+git log --oneline -5
+gh repo view --web
+
+10. Schedule the Git commit script every five minutes (requires noninteractive Git auth):
+
+(crontab -l 2>/dev/null | grep -v '/automation-lab/scripts/' || true; echo "*/5 * * * * $HOME/automation-lab/scripts/run_and_commit.sh >> $HOME/automation-lab/logs/cron.log 2>&1") | crontab -
+
+11. Test and inspect:
+
+./scripts/run_and_commit.sh
+crontab -l
+tail -n 30 logs/cron.log
+git log --oneline -5
+
+IMPORTANT: In automated cron execution, GitHub authentication must be available without interactive prompts. The systemd timer still generates reports; you may disable it to avoid duplicate reports:
+# systemctl --user disable --now sysreport.timer
+
+EXPECTED: Git commits, successful hooks, a branch merge, and GitHub synchronization.
+
+========================================
+EXPERIMENT 3 — AGILE PROJECT MANAGEMENT WITH GIT
+========================================
+
+1. Inspect prior experiments:
+
+cd ~/automation-lab
+git status
+git log --oneline -5
+git remote -v
+crontab -l
+systemctl --user status sysreport.timer --no-pager || true
+
+2. Authenticate GitHub Projects (browser approval may be needed):
+
+gh auth status
+gh auth refresh -s project
+
+3. Create a project and get its number:
+
+gh project create --owner "@me" --title "Automation LAB"
+OWNER="$(gh api user --jq .login)"
+REPO="$(gh repo view --json name --jq .name)"
+PROJECT_NUMBER="$(gh project list --owner '@me' --format json --jq '.projects[] | select(.title=="Automation LAB") | .number' | head -n 1)"
+echo "Owner: $OWNER, Repo: $REPO, Project: $PROJECT_NUMBER"
+
+gh project link "$PROJECT_NUMBER" --owner "$OWNER" --repo "$OWNER/$REPO"
+
+4. Create issues:
+
+gh issue create --title "Generate System Report" --body "Automate Linux system report generation."
+gh issue create --title "Run Cron Job" --body "Schedule system reports every five minutes."
+gh issue create --title "Run Systemd Timer" --body "Configure and verify systemd timer."
+gh issue create --title "Execute Git Hooks" --body "Validate Bash scripts using Git hooks."
+gh issue create --title "CI/CD Pipeline Monitoring" --body "Track CI/CD pipeline results and deployment."
+gh issue list --state all
+
+5. Add issues to the board:
+
+for ISSUE in $(gh issue list --state all --limit 100 --json number --jq '.[].number'); do
+  gh project item-add "$PROJECT_NUMBER" --owner "$OWNER" \
+    --url "https://github.com/$OWNER/$REPO/issues/$ISSUE"
+done
+
+6. Add a custom workflow stage field (Backlog / To Do / In Progress / Done):
+
+gh project field-create "$PROJECT_NUMBER" --owner "$OWNER" \
+  --name "Lab Stage" --data-type SINGLE_SELECT \
+  --single-select-options "Backlog,To Do,In Progress,Done"
+
+gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --format json
+
+7. Select report issue and project item / stage IDs:
+
+REPORT_ISSUE="$(gh issue list --state all --search 'Generate System Report in:title' --json number --jq '.[0].number')"
+REPORT_URL="https://github.com/$OWNER/$REPO/issues/$REPORT_ISSUE"
+PROJECT_ID="$(gh project view "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq .id)"
+FIELD_ID="$(gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq '.fields[] | select(.name=="Lab Stage") | .id')"
+IN_PROGRESS_ID="$(gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq '.fields[] | select(.name=="Lab Stage") | .options[] | select(.name=="In Progress") | .id')"
+DONE_ID="$(gh project field-list "$PROJECT_NUMBER" --owner "$OWNER" --format json --jq '.fields[] | select(.name=="Lab Stage") | .options[] | select(.name=="Done") | .id')"
+REPORT_ITEM_ID="$(gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 100 --format json --jq --arg url "$REPORT_URL" '.items[] | select(.content.url==$url) | .id')"
+echo "Issue: $REPORT_ISSUE; project item: $REPORT_ITEM_ID"
+
+8. Move report issue to In Progress:
+
+gh project item-edit --id "$REPORT_ITEM_ID" --project-id "$PROJECT_ID" \
+  --field-id "$FIELD_ID" --single-select-option-id "$IN_PROGRESS_ID"
+
+9. Run the job, then move it to Done:
+
+./scripts/run_and_commit.sh
+gh project item-edit --id "$REPORT_ITEM_ID" --project-id "$PROJECT_ID" \
+  --field-id "$FIELD_ID" --single-select-option-id "$DONE_ID"
+
+10. Link commit to issue and close issue:
+
+gh issue comment "$REPORT_ISSUE" --body "Report executed. Commit: $(git rev-parse HEAD)"
+gh issue close "$REPORT_ISSUE" --reason completed
+
+11. Check cron, systemd, and Agile board:
+
+crontab -l
+systemctl --user start sysreport.service
+systemctl --user status sysreport.service --no-pager
+journalctl --user -u sysreport.service -n 10 --no-pager
+gh project item-list "$PROJECT_NUMBER" --owner "$OWNER" --limit 100
+gh issue list --state all
+gh project view "$PROJECT_NUMBER" --owner "$OWNER" --web
+
+EXPECTED: GitHub issues on the Agile board; tasks move from In Progress to Done; issue comments link commits.
+NOTE: Project custom-field statuses are not automatically updated by a GitHub Issue close unless extra project automation is configured.
+
+========================================
+EXPERIMENT 4 — CI/CD PIPELINE AND PROMPT-BASED AUTOMATION
+========================================
+
+1. Prepare workflow folder:
+
+cd ~/automation-lab
+mkdir -p .github/workflows
+
+2. Create prompt-labelled, rule-based analysis script:
+
+cat > scripts/prompt_report.py <<'EOF'
+#!/usr/bin/env python3
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+if len(sys.argv) < 3:
+    print("Usage: python3 prompt_report.py <logfile> <prompt>")
+    sys.exit(1)
+
+logfile = Path(sys.argv[1])
+prompt = sys.argv[2]
+if not logfile.exists():
+    print("ERROR: Log file does not exist")
+    sys.exit(1)
+
+lines = logfile.read_text(errors="ignore").splitlines()
+keywords = ["error", "failed", "failure", "fatal", "permission denied", "command not found"]
+errors = [line for line in lines if any(word in line.lower() for word in keywords)]
+status = "FAILURE" if errors else "SUCCESS"
+report = f"""# Automation Analysis Report
+
+Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
+
+## Analysis Prompt
+
+{prompt}
+
+## Log Analysis Status
+
+**{status}**
+
+## Execution Statistics
+
+- Total log lines: {len(lines)}
+- Errors detected: {len(errors)}
+
+## Detected Errors
+
+"""
+if errors:
+    for error in errors:
+        report += f"- {error}\n"
+    report += """
+## Recommended Actions
+
+1. Inspect failed commands.
+2. Check permissions.
+3. Verify script paths.
+4. Correct errors and rerun CI.
+"""
+else:
+    report += """
+No errors detected.
+
+## Recommended Actions
+
+1. Continue monitoring scheduled jobs.
+2. Verify GitHub Actions workflow status.
+"""
+Path("automation-summary.md").write_text(report)
+print(report)
+EOF
+
+
+3. Validate and run analysis:
+
+python3 -m py_compile scripts/prompt_report.py
+./scripts/sysreport.sh
+python3 scripts/prompt_report.py \
+  "logs/sysreport_$(date +%F).log" \
+  "Analyze automation results, detect errors and recommend actions."
+cat automation-summary.md
+
+4. Create GitHub Actions workflow (paste whole block):
+
+cat > .github/workflows/automation-ci.yml <<'EOF'
+name: Automation Lab CI/CD
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  test:
+    name: Test and Analyze
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Validate Bash scripts
+        run: |
+          bash -n scripts/sysreport.sh
+          bash -n scripts/run_and_commit.sh
+      - name: Validate Python script
+        run: python3 -m py_compile scripts/prompt_report.py
+      - name: Generate system report
+        run: bash scripts/sysreport.sh
+      - name: Analyze logs
+        run: |
+          python3 scripts/prompt_report.py \
+            "logs/sysreport_$(date +%F).log" \
+            "Analyze automation results and detect errors."
+      - name: Display analysis
+        run: |
+          cat automation-summary.md
+          cat automation-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: automation-analysis-report
+          path: automation-summary.md
+
+  deploy:
+    name: Deploy Scripts
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Prepare deployment package
+        run: |
+          mkdir -p deployment
+          cp scripts/sysreport.sh deployment/
+          cp scripts/run_and_commit.sh deployment/
+          cp scripts/prompt_report.py deployment/
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: automation-deployment-package
+          path: deployment/
+
+  agile-update:
+    name: Update Agile Issue
+    needs: [test, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find monitoring issue
+        id: issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ISSUE=$(gh issue list \
+            --state all \
+            --search "CI/CD Pipeline Monitoring in:title" \
+            --json number \
+            --jq '.[0].number')
+          echo "number=$ISSUE" >> "$GITHUB_OUTPUT"
+      - name: Pipeline success
+        if: needs.test.result == 'success' && needs.deploy.result == 'success' && steps.issue.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE: ${{ steps.issue.outputs.number }}
+        run: |
+          gh issue comment "$ISSUE" \
+            --body "CI/CD SUCCESS: Tests and deployment completed."
+          gh issue close "$ISSUE" --reason completed || true
+      - name: Pipeline failure
+        if: (needs.test.result != 'success' || needs.deploy.result != 'success') && steps.issue.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE: ${{ steps.issue.outputs.number }}
+        run: |
+          gh issue comment "$ISSUE" \
+            --body "CI/CD FAILURE: Inspect the failed workflow and rerun."
+          gh issue reopen "$ISSUE" || true
+EOF
+
+
+5. Validate, commit and push:
+
+bash -n scripts/sysreport.sh
+bash -n scripts/run_and_commit.sh
+python3 -m py_compile scripts/prompt_report.py
+git add scripts/prompt_report.py .github/workflows/automation-ci.yml automation-summary.md
+git commit -m "Add CI/CD automation pipeline"
+git push origin master
+
+6. Trigger workflow and inspect runs:
+
+gh workflow run automation-ci.yml --ref master
+gh run list --workflow automation-ci.yml
+gh run view "$(gh run list --workflow automation-ci.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+gh repo view --web
+
+7. Download latest run's artifacts (when run has completed):
+
+gh run download "$(gh run list --workflow automation-ci.yml --limit 1 --json databaseId --jq '.[0].databaseId')" --dir downloaded-artifacts
+
+8. Deliberately trigger Python syntax failure:
+
+cp scripts/prompt_report.py /tmp/prompt_report_backup.py
+echo 'def broken(' >> scripts/prompt_report.py
+git add scripts/prompt_report.py
+git commit -m "Test CI failure handling"
+git push origin master
+
+9. Restore code and verify recovery:
+
+cp /tmp/prompt_report_backup.py scripts/prompt_report.py
+python3 -m py_compile scripts/prompt_report.py
+git add scripts/prompt_report.py
+git commit -m "Restore successful CI pipeline"
+git push origin master
+gh run list --workflow automation-ci.yml
+gh issue list --state all
+
+EXPECTED: GitHub Actions runs validation and report generation, creates report/deployment artifacts, and closes/reopens the CI monitoring issue based on workflow results.
+NOTE: Deployment is a packaged artifact, not a production-server deployment. This script uses keyword matching rather than an LLM API.
+NOTE: Closing/reopening an issue does not necessarily update a custom GitHub Projects field automatically.
+
+========================================
+FINAL VERIFICATION — EXPERIMENTS 1 TO 4
+========================================
+
+cd ~/automation-lab
+
+echo '========== EXPERIMENT 1 =========='
+crontab -l
+systemctl --user list-timers --all
+ls -l logs/
+
+echo '========== EXPERIMENT 2 =========='
+git status
+git log --oneline -5
+git remote -v
+
+echo '========== EXPERIMENT 3 =========='
+gh issue list --state all
+gh project list --owner '@me'
+
+echo '========== EXPERIMENT 4 =========='
+gh workflow list
+gh run list --limit 5
+cat automation-summary.md
+
+========================================
+QUICK REFERENCE
+========================================
+Experiment 1: crontab -l | systemctl --user list-timers | journalctl --user
+Experiment 2: git init | git add | git commit | git push | git merge | git log
+Experiment 3: gh project create | gh issue create | gh project item-add | gh issue close
+Experiment 4: bash -n | python3 -m py_compile | gh workflow run | gh run list
+
+
+OPTIONAL: Edit files manually during the practical exam:
+
+nano scripts/sysreport.sh
+SAVE/EXIT: Ctrl+O, Enter, Ctrl+X
+
+vim scripts/sysreport.sh
+SAVE/EXIT: Press i to edit; Esc, type :wq, press Enter.
+CANCEL CHANGES: Esc, type :q!, press Enter.
+
+crontab -e
+SAVE/EXIT (nano): Ctrl+O, Enter, Ctrl+X
+SAVE/EXIT (vim): Esc, :wq, Enter
+
+less logs/sysreport_$(date +%F).log
+
+END OF ALL FOUR EXPERIMENTS
